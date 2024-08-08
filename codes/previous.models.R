@@ -87,7 +87,7 @@ meanvarstandardize<-function(testdata, traindata = ""){
 }
 
 
-EMC92Classifier<-function(testlogdata, trainlogdata,threshold=NULL){
+EMC92Classifier<-function(testlogdata, trainlogdata, threshold = NULL, ...){
   
   if (is.null(threshold)){threshold=0.827;}
   EMCScore<-c(0.0594273379801556,-0.110491572253885,-0.108832301005201,-0.062550086484268,-0.0418164824703641,0.0174897923948543,0.00668584689209701,0.0423154071076169,-0.0493203905211073,0.0164925076573208,-0.0344544706411548,0.00866233731636807,0.00455819600852017,-0.0644105573058562,-0.00414107711721288,-0.0183994540236258,-0.0520135932088583,-0.0767532974279582,-0.00063407777663618,0.0489558593887832,-0.0163691988848842,0.0420452994583269,0.0870276088358123,0.0406887458334764,-0.05606504920594,0.0529972408575157,0.0112796922615379,0.0140109440864371,0.00078080860374577,0.075000229909631,0.009265826714752,0.0860546977563988,-0.0996944005531858,0.0558748936987772,0.073011096187736,0.00538232634785429,0.055611094941233,-0.0520445402963303,0.0125985686829356,0.005608194716564,0.0163467078063,-0.0319185908460475,0.0773361612870129,-0.00900009551662273,-0.0575829465263513,0.022119958576764,0.0396248830654306,0.0524561174360331,0.0476703103071683,-0.0422745546301539,-0.0341783399437912,-0.0251675596648738,0.0495596844465701,0.0547508890118559,0.0437224907573062,-0.0371869820707693,0.0205354349665636,0.0445923111233813,-0.0069962048640006,0.025498590737044,0.0208131193381807,0.0685640666167821,-0.0330380997958823,-0.0105781969037762,-0.0585102612125953,0.0128945938676131,-0.0333628118834898,-0.0349253487676344,0.0660971817524709,-0.0617575340318364,-0.0210452256979565,-0.0389953930227488,-0.0873912090180467,-0.0176248165093743,0.0302900524131141,-0.0051520032747514,0.0745893468079515,-0.0322581999457566,0.0200333568025016,0.0115861932788841,-0.00969926642147875,0.00345861530256628,0.0277930303183715,0.0153863421114279,-0.0777964537268526,0.0349480953839344,-0.00022873908620183,-0.0529393125922244,0.0713507977617356,-0.0253569213540041,0.0384170565171902,0.0225490655109955)
@@ -105,7 +105,7 @@ EMC92Classifier<-function(testlogdata, trainlogdata,threshold=NULL){
                 dimnames=list(rownames(testlogdata),c("score","isHighRisk"))))
 }
 
-MRCIX6Classifier <- function(testlogdata, threshold = NULL){
+MRCIX6Classifier <- function(testlogdata, threshold = NULL, ...){
   
   if (is.null(threshold)){
     threshold=0.999999
@@ -150,7 +150,7 @@ MRCIX6Classifier <- function(testlogdata, threshold = NULL){
 }
 
 
-UAMS80Classifier<-function(testlogdata,threshold=NULL){
+UAMS80Classifier<-function(testlogdata,threshold=NULL, ...){
   
   #Pharmacogenomics of bortezomib test-dosing identifies hyperexpression of proteasome gene, especially... shaughnessy et al, Blood, doi:10.1182/blood-2010-12-328252
   if (is.null(threshold)){ threshold = 2.48}
@@ -184,7 +184,7 @@ UAMS80Classifier<-function(testlogdata,threshold=NULL){
                 dimnames = list(rownames(testlogdata), c("score","isHighRisk"))))
 }
 
-UAMS17Classifier <- function(testlogdata, trainlogdata, threshold = NULL){
+UAMS17Classifier <- function(testlogdata, trainlogdata, threshold = NULL, ...){
   
   # The corrected UAMS17 gene signature as described in W.J. Chng, W.M. Kuehl, P.L. Bergsagel, and R. Fonseca, Translocation t(4;14) retains 	
   # prognostic significance even in the setting of high-risk molecular signature,Leukemia,  vol. 22, 2008, pp. 462-462.
@@ -215,7 +215,7 @@ UAMS17Classifier <- function(testlogdata, trainlogdata, threshold = NULL){
                 dimnames=list(rownames(testlogdata),c("score","isHighRisk"))))
 }
 
-MILLENNIUM100Classifier <- function(testlogdata, trainlogdata, threshold = NULL){
+MILLENNIUM100Classifier <- function(testlogdata, trainlogdata, threshold = NULL, ...){
   
   if (is.null(threshold)){
     threshold=0.55
@@ -266,7 +266,7 @@ MILLENNIUM100Classifier <- function(testlogdata, trainlogdata, threshold = NULL)
 }
 
 
-IFM15Classifier <- function(testlogdata, trainlogdata, threshold = NULL){
+IFM15Classifier <- function(testlogdata, trainlogdata, threshold = NULL, ...){
   
   #Threshold according to article is at the highest quantile in the trainset. This must be +- 0.71
   if (is.null(threshold)){
@@ -297,7 +297,7 @@ IFM15Classifier <- function(testlogdata, trainlogdata, threshold = NULL){
                 dimnames=list(rownames(testlogdata),c("score","isHighRisk"))))
 }
 
-UAMS70Classifier <- function(testlogdata, threshold = NULL){
+UAMS70Classifier <- function(testlogdata, threshold = NULL, ...){
   
   #applied to non scaled/centred data (scaling/centring not mentioned in paper)
   if (is.null(threshold)){threshold=0.66}

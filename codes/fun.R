@@ -835,11 +835,123 @@ biMeans <- function(X, sets, minGenes = 10){
 }
 
 #-------------------------------------------------------------------------------
+#- Used in compare with previous models
+#- adjust batch effects
+#-------------------------------------------------------------------------------
 
+adjDat <- function(method) {
+  
+  #- load previous models
+  # in GSE136324
+  load("../data/GSE136324.RData")
+  y136324 = survival::Surv(clin$time, clin$status)
+  
+  # GSE9782
+  load("../data/GSE9782B.RData")
+  y9782 = survival::Surv(clin$time, clin$status)
+  
+  # GSE9782
+  load("../data/GSE2658B.RData")
+  y2658 = survival::Surv(clin$time, clin$status)
+  
+  # load other models
+  load("../data/dataPreviousModel.RData")
+  load("../data/batchCorrectedData.RData")
+  
+  X9782 <- miss.impute(X9782, cbind(X136324, X2658))
+  
+  if (method == "MILLENNIUM100") {
+    Ref <- batchCorrectedData$gepall
+    Ref <- Ref[,batchCorrectedData$batchesall["APEX",]]
+  } else if(method == "EMC92"){
+    Ref <- batchCorrectedData$gepall
+    Ref <- Ref[,batchCorrectedData$batchesall["H65",]]
+  }  else if(method == "FM15"){
+    Ref <- batchCorrectedData$gepwoapex
+  } else {
+    Ref <- X136324
+  }
+  
+  #- impute for X9782
+  probes.in <- rownames(Ref)
+  dat <- cbind(Ref[probes.in,], 
+               X9782[probes.in,], 
+               X2658[probes.in,], 
+               X136324[probes.in,])
+  
+  batch <- c(rep(1, ncol(Ref)), rep(2, ncol(X9782)), rep(3, ncol(X2658)), 
+             rep(4, ncol(X136324)))
+  
+  cb <- sva::ComBat(dat = dat,
+                    batch = batch,
+                    mod = NULL,
+                    par.prior = T,
+                    prior.plots = FALSE,
+                    mean.only = F,
+                    ref.batch = 1)
+  
+  #- X9782
+  X9782 <- cb[,batch == 2]
+  
+  #- X2658
+  X2658 <- cb[,batch == 3]
+  
+  #- X2658
+  X136324 <- cb[,batch == 4]
+  
+  return(list(Ref = Ref,
+              X9782 = X9782,
+              y9782 = y9782,
+              X2658 = X2658,
+              y2658 = y2658,
+              X136324 = X136324,
+              y136324 = y136324))
+}
 
+#-------------------------------------------------------------------------------
 
+cumhz <- function(lp, y, times){
+  
+  if (!is.Surv(y))
+    stop("y should be a Surv object")
+  
+  n <- length(y)
+  ord <- order(y[,1], y[,2])
+  
+  #- time should be ordered
+  #- warning: Strata will not be considered
+  
+  riskRegression::baseHaz_cpp(starttimes = rep(0, n),
+                              stoptimes  = y[ord ,1],
+                              status = y[ord ,2],
+                              eXb = exp(lp)[ord],
+                              strata = rep(0, n),
+                              nPatients = n,
+                              nStrata = 1,
+                              emaxtimes = max(y[,1]),
+                              predtimes = times,
+                              cause = 1,
+                              Efron = T)$cumhazard
+  
+}
 
+#- survP, calculate survival probability of validation data
 
+survP <- function(beta, trainX, trainY, validX, times) {
+  
+  #- lp, linear predictors obtained from training
+  #- trainX, trainY, training data
+  #- validX, validation data
+  #- times,  survival probabalities for the times 
+  
+  s <- names(beta)
+  lpFitted <- trainX[,s, drop = F] %*% beta
+  lpPred   <- validX[,s, drop = F] %*% beta
+  
+  chz <- cumhz(lpFitted, trainY, times)
+  mapply(function(x) {exp(-x * exp(lpPred))}, x = chz, SIMPLIFY = T)
+  
+}
 
 
 

@@ -191,8 +191,6 @@ f   <- gse@phenoData@data
 
 #- byproduct end
 
-#-
-
 id <- f$geo_accession
 treat  <- gsub("treatment = ", "", f$characteristics_ch1.1)
 gender <- gsub("sex = ", "", f$characteristics_ch1.2)

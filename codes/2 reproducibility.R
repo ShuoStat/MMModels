@@ -1,18 +1,25 @@
 
 pkgs <- c("survival", "dplyr", "glmnet", "survminer", "msigdb",
           "doParallel", "doSNOW", "reshape2", "ggplot2", "tidyr",
-          "ggpubr", "risksetROC", "impute", "sva", "GSVA")
+          "tidyverse", "ggpubr", "risksetROC", "impute", "sva", "GSVA")
 
-test = T
 for (p in pkgs) {
-  tryCatch(test <- require(p, character.only = T), 
-           warning = function(w) return())
+  tryCatch({
+    test <- require(p, character.only = TRUE)
+  }, error = function(e) {
+    test <<- FALSE
+  })
   
-  if(!test) {
+  if (!test) {
     print(paste("Package", p, "not found. Installing Package!"))
     install.packages(p)
-    BiocManager::install(p)
-    require(p)
+    if (requireNamespace("BiocManager", quietly = TRUE)) {
+      BiocManager::install(p)
+    } else {
+      install.packages("BiocManager")
+      BiocManager::install(p)
+    }
+    require(p, character.only = TRUE)
   }
 }
 
@@ -194,7 +201,7 @@ load("../output/hs.grp.RData")
 lapply(hs.grp, function(x) length(unlist(x)))
 
 #-------------------------------------------------------------------------------
-#- Pathway-based models
+# Get pathway-based models
 #-------------------------------------------------------------------------------
 
 fitMod.scores <- function(X, y, paths, cutoff, foldid,
@@ -271,7 +278,11 @@ stopCluster(cl)
 #- Prediction performance in internal validation -------------------------------
 #- get validation
 
+# function to derive IBS (integrated Brier Score)
 get.ibs <- function(X.t, X.v, y.t, y.v, beta) {
+  
+  # X.t, y.t training data
+  # X.v, y.v validation data
   
   require(pec)
   
@@ -291,8 +302,7 @@ get.ibs <- function(X.t, X.v, y.t, y.v, beta) {
   as.numeric(pec::crps(p, times = p$minmaxtime))
 }
   
-#- function to get C-index and ibs
-
+# modPred, get model prediction used in parallel runing
 modPred <- function(modsPath, modsGenes, X.t, X.v, y.t, y.v){
   
   # modsPath, including models for all pathways
@@ -381,7 +391,6 @@ modPred <- function(modsPath, modsGenes, X.t, X.v, y.t, y.v){
 }
 
 #-
-
 cl <- makeCluster(ncores)
 registerDoSNOW(cl)
 
@@ -403,18 +412,21 @@ pred <- foreach(i = 1:nsim,
                   X.t <- X[ ,sam]
                   y.t <- y[sam]
                   
-                  #- Validate procedure
-                  modPred(modsPath, modsGenes, X.t, X.v, y.t, y.v)
+                  #- validate procedure
+                  out <- modPred(modsPath, modsGenes, X.t, X.v, y.t, y.v)
+                  out$index <- i
+                  return(out)
                 }
 
 stopCluster(cl)
-# save(list = "pred", file = "../output/pred.nsim.R")
+# save(list = "pred", file = "../output/pred.nsim.RData")
 
 #-------------------------------------------------------------------------------
-#- Visualization Internal CV, Figure 2
+# Visualization Internal CV, Figure 2
+# In the revised version, we used the mean and 1.96 *se, instead of boxplits
 #-------------------------------------------------------------------------------
 
-load("../output/pred.nsim.R")
+load("../output/pred.nsim.RData")
 library(ggplot2)
 
 pred$paths <- stringr::str_to_title(pred$paths)
@@ -432,7 +444,7 @@ ibs.means <- ibs %>%
   summarise(mean = format(round(mean(value), 3), nsmall = 3),
             sd   = format(round(sd(value), 3), nsmall = 3)) %>%
   mutate(ibs = paste0(mean, "(", sd, ")")) %>%
-  select(!c("mean", "sd")) %>%
+  dplyr::select(!c("mean", "sd")) %>%
   tidyr::pivot_wider(names_from = c("method"),
                      values_from = "ibs")
 
@@ -451,7 +463,7 @@ p1 <- ggplot(ibs, aes(x = factor(paths,
   theme(legend.title = element_blank(),
         axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1))
 
-
+# C-index
 cindex <- filter(pred, measure == "cindex", method != "plage")
 
 cindex.means <- cindex %>%
@@ -459,7 +471,7 @@ cindex.means <- cindex %>%
   summarise(mean = format(round(mean(value), 3), nsmall = 3),
             sd   = format(round(sd(value), 3), nsmall = 3)) %>%
   mutate(cindex = paste0(mean, "(", sd, ")")) %>%
-  select(!c("mean", "sd")) %>%
+  dplyr::select(!c("mean", "sd")) %>%
   tidyr::pivot_wider(names_from = c("method"),
                      values_from = "cindex")
 
@@ -480,6 +492,147 @@ p2 <- ggplot(cindex, aes(x = factor(paths,
 
 p <- ggpubr::ggarrange(p2, p1, nrow = 2, common.legend = TRUE, legend = "bottom")
 ggsave("../results/Figure 2.pdf", p, width = 8, height = 6)
+ggsave("../results/Figure 2.tiff", p, width = 8, height = 6, units = "in", 
+       dpi = 300, compression = "lzw")
+
+# In the revised version, we use mean and se -----------------------------------
+# C-index, mean and se
+
+CMeanSe <- cindex %>%
+  group_by(paths, method) %>%
+  summarise(mean = mean(value),
+            se   = sd(value) / sqrt(100)) %>%
+  mutate(paths = factor(paths, levels = ord))
+           
+pd <- position_dodge(width = 0.5)
+p1 <- ggplot(CMeanSe, aes(x = paths, y = mean, color = method)) + 
+  geom_line(position = pd) +
+  geom_pointrange(aes(ymin = mean - 1.96 * se, ymax = mean + 1.96 * se), 
+                  position = pd,
+                  size = 0.35) +
+  theme_bw() + 
+  geom_hline(yintercept = CMeanSe$mean[CMeanSe$paths == "Genes"]) +
+  ylab("C-index") +
+  xlab(NULL) + 
+  ggtitle("A, C-index") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.title = element_blank())
+
+# IBS, mean and se
+
+IBSMeanSe <- ibs %>%
+  group_by(paths, method) %>%
+  summarise(mean = mean(value),
+            se   = sd(value) / sqrt(100)) %>%
+  mutate(paths = factor(paths, levels = ord))
+
+pd <- position_dodge(width = 0.5)
+p2 <- ggplot(IBSMeanSe, aes(x = paths, y = mean, color = method)) + 
+  geom_line(position = pd) +
+  geom_pointrange(aes(ymin = mean - 1.96 * se, ymax = mean + 1.96 * se), 
+                  position = pd,
+                  size = 0.35) +
+  geom_hline(yintercept = IBSMeanSe$mean[IBSMeanSe$paths == "Genes"]) +
+  theme_bw() + 
+  ylab("IBS") +
+  xlab(NULL) + 
+  ggtitle("B, IBS") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.title = element_blank())
+
+
+p <- ggpubr::ggarrange(p1, p2, nrow = 2, common.legend = TRUE, legend = "bottom")
+ggsave("../results/Figure 2R.pdf", p, width = 8, height = 7)
+ggsave("../results/Figure 2R.tiff", p, width = 8, height = 7, units = "in", 
+       dpi = 300, compression = "lzw")
+
+# in the revision, we conduct statistical test to compare method 
+
+adj.t.test <- function(x, y, n1, n2) {
+  
+  # Let x and y be the accuracy of algorithms A and B respectively
+  # n1 instances are used for training, and the remaining n2 instances for testing
+  
+  # Check if the lengths of x and y are the same
+  if(length(x) != length(y))
+    stop("x and y should be the same length")
+  
+  # Calculate the differences between x and y
+  z = as.numeric(x) - as.numeric(y)
+  
+  # Determine the number of differences
+  n = length(z)
+  
+  # Calculate the variance of the differences
+  sigma = var(z)
+  
+  # Calculate the t-statistic
+  t = mean(z) / sqrt((1 / n + n2 / n1) * sigma)
+  
+  # Calculate the p-value based on the t-statistic and degrees of freedom
+  p.value <- pt(q = t, df = n - 1)
+  
+  # Return the mean of x, mean of y, the t-statistic, and p-value as a named list
+  return(list(mean.x = mean(x),
+              mean.y = mean(y),
+              statistic = t,
+              p.value = p.value))
+}
+
+#-------------------------------------------------------------------------------
+
+load( "../output/pred.nsim.RData")
+
+# cindex
+cMat <- pred %>%
+  filter(measure == "cindex" & method  != "plage") %>%
+  mutate(path_method = str_to_title(paste0(paths, "(", method, ")"))) %>%
+  mutate(ifelse(path_method == "Genes(Genes)", "Gene", path_method)) %>%
+  pivot_wider(id_cols = index, id_expand = TRUE, 
+              values_from = value, names_from = path_method) 
+
+iMat <- pred %>%
+  filter(measure == "ibs" & method  != "plage") %>%
+  mutate(path_method = str_to_title(paste0(paths, "(", method, ")"))) %>%
+  mutate(ifelse(path_method == "Genes(Genes)", "Gene", path_method)) %>%
+  pivot_wider(id_cols = index, id_expand = TRUE, 
+              values_from = value, names_from = path_method)
+n1 = 306
+n2 = 130
+cMat <- cMat[, -1]
+allMethods <- names(cMat)
+nMethod <- ncol(cMat)
+
+pmat <- matrix(NA, nrow = nMethod, ncol = nMethod,
+               dimnames = list(allMethods, allMethods))
+
+for(i in seq_len(nMethod)) {
+  if(i < (nMethod - 1)) {
+    for(j in (i + 1):nMethod){
+      pmat[i, j] <- adj.t.test(pull(cMat[,i]), pull(cMat[,j]), 
+                               n1 = n1, n2 = n2)$p.value
+      pmat[j, i] <- adj.t.test(pull(iMat[,i]), pull(iMat[,j]),
+                               n1 = n1, n2 = n2)$p.value
+    }
+  }
+}
+
+library(RColorBrewer)
+pmat[pmat > 0.10] <- NA
+diag(pmat) <- 0
+pdf("../results/stat.pdf", width = 10, height = 10)
+jpeg("../results/stat.jpeg", width = 10, height = 10, units = "in", res = 300)
+
+m <- pheatmap::pheatmap(pmat, 
+                        color = colorRampPalette(rev(brewer.pal(n = 7, name = "Greens")))(100),
+                        cluster_rows = FALSE, 
+                        cluster_cols = FALSE,
+                        legend_breaks = c(0, 0.01, 0.05, 0.10),
+                        legend_labels = c("0", "0.01", "0.05", "0.10"),
+                        na_col = "white",
+                        fontsize = 8)
+print(m)
+dev.off()
 
 #-------------------------------------------------------------------------------
 # External validation
@@ -533,14 +686,12 @@ re2658 <- modPred(modsPath, modsGenes, X.t, X.v, y.t, y.v)
 
 # save(list = c("re9782", "re2658"), file = "../output/outvalidB.RData")
 
-
 predict.mods <- function(mods, newX, paths = "hall", method = "ssgsea"){
   
   # mods, either modsPath, or modsGenes
   # method, gsva, ssgsea, zscre grp
   # paths, biocarta, cgn, cpg, cm, genes, gobp, gocc, gomf, hall, hpo, immune, oncogene
   # pid, reactome, tft.gtrd, tft.legency, vax, wiki
-  
   
   if (method == "genes"){
     
@@ -581,202 +732,657 @@ predict.mods <- function(mods, newX, paths = "hall", method = "ssgsea"){
 }
  
 load("../output/training.RData")
-#- in original data
-load("../data/GSE136324.RData")
-X136324 = as.matrix(X)
-y136324 = survival::Surv(clin$time, clin$status)
-lp136324_vax_grp <- predict.mods(modsPath, X136324, paths = "vax", method = "grp")
-# lp136324_cgn_grp <- predict.mods(modsPath, X136324, paths = "cgn", method = "grp")
-lp136324_vax_ssgsea <- predict.mods(modsPath, X136324, paths = "vax", method = "ssgsea")
-lp136324_genes <- predict.mods(modsGenes, X136324, paths = "", method = "genes")
 
-pred136324 <- list(lp136324_vax_grp = lp136324_vax_grp, 
-                   # lp136324_cgn_grp = lp136324_cgn_grp,
-                   lp136324_vax_ssgsea = lp136324_vax_ssgsea,
-                   lp136324_genes = lp136324_genes)
-#-
+#- in original data
+# predFun <- function(modsPath, modsGenes, newX, newy, path_method, X.t, y.t){
+# 
+#   newX = as.matrix(newX)
+#   X.t  = as.matrix(X.t)
+#   # to GSVA method
+# 
+#   tranX.new <- list()
+#   tranX.t   <- list()
+# 
+#   for(i in seq_along(path_method)) {
+# 
+#     path <- path_method[[i]][1]
+#     method <- path_method[[i]][2]
+# 
+#     if (method %in% c("ssgsea", "zscore", "gsva")){
+# 
+#       mod  <- modsPath[[path]]
+#       beta <- mod[[method]]
+# 
+#       tranX.new[[paste0("X_", path, "_", method)]] <-
+#         GSVA::gsva(newX, hs[[path]][names(beta)], method = method,
+#                    ssgsea.norm = FALSE)
+# 
+#       tranX.t[[paste0("X.t_", path, "_", method)]] <-
+#         GSVA::gsva(X.t, hs[[path]][names(beta)], method = method,
+#                    ssgsea.norm = FALSE)
+# 
+#     }
+#   }
+# }
+
+
+#-------------------------------------------------------------------------------
+# Get CI using bootstrap
+#-------------------------------------------------------------------------------
+# 
+# set.seed(123)
+# nCores = 10
+# nRun = 1000
+# 
+# CIList <- list()
+# methods <- c("EMC92Classifier", "UAMS70Classifier", "IFM15Classifier", "MILLENNIUM100Classifier")
+# 
+# for(method in methods) {
+#   require(doParallel)
+#   require(doSNOW)
+#   nCores  <- pmin(detectCores() - 1, nCores)
+#   cluster <- makeCluster(nCores)
+#   registerDoParallel(cluster)
+# 
+# 
+#   # adjDat, function in fun.R, used for batch correction by methods
+#   dat <- adjDat(method)
+#   pb <- txtProgressBar(min = 1, max = nRun, style = 3)
+#   progress <- function(n) setTxtProgressBar(pb, n)
+#   opts <- list(progress = progress)
+# 
+#   re <- foreach(i = seq_len(nRun),
+#                 .export = c("dat"),
+#                 .combine = "rbind",
+#                 .options.snow = opts) %dopar% {
+#                   source("previous.models.R")
+#                   out <- parFun(dat, method = method)
+#                   return(out)
+#                 }
+# 
+#   CIList[[method]] <- re
+#   stopCluster(cluster)
+# }
+# 
+
+# using bootstrap to obtain CI, also includes external validation 
+# mods, c("modsPath", "modsGenes")
+  
+BootMyModsFun <- function(modsPath, modsGenes, 
+                          newX, newy, 
+                          path_method, 
+                          samIndList,
+                          nCores = 1, 
+                          X.t, y.t) {
+  
+  # path_method, list. The first element is pathway and the second is method
+  # example
+  # path_method <- list(c("vax", "grp"),
+  #                     c("vax", "ssgsea"),
+  #                     c("", "genes"))
+  
+  newX = as.matrix(newX)
+  X.t  = as.matrix(X.t)
+  # to GSVA method
+  
+  tranX.new <- list()
+  tranX.t   <- list()
+  
+  for(i in seq_along(path_method)) {
+    
+    path <- path_method[[i]][1]
+    method <- path_method[[i]][2]
+    
+    if (method %in% c("ssgsea", "zscore", "gsva")){
+      
+      mod  <- modsPath[[path]]
+      beta <- mod[[method]]
+      
+      tranX.new[[paste0("X_", path, "_", method)]] <- 
+        GSVA::gsva(newX, hs[[path]][names(beta)], method = method, 
+                   ssgsea.norm = FALSE)
+      
+      tranX.t[[paste0("X.t_", path, "_", method)]] <- 
+        GSVA::gsva(X.t, hs[[path]][names(beta)], method = method, 
+                   ssgsea.norm = FALSE)
+      
+    }
+  }
+  
+  # getMethod
+  doParFun <- function(samInd){
+    
+    out <- list()
+    for(j in seq_along(path_method)) {
+      
+      path   <- path_method[[j]][1]
+      method <- path_method[[j]][2]
+      
+      # gene model
+      if (method == "genes"){
+        beta <- modsGenes
+        if (length(beta) > 0) {
+          newZ <- newX[names(beta), samInd, drop = F]
+          lp <- t(newZ) %*% beta
+        } else {
+          lp <- rep(1, ncol(newZ))
+        }
+      }
+      
+      # grp
+      if (method == "grp") {
+        mod  <- modsPath[[path]]
+        beta <- mod$grp$beta
+        if (length(beta) > 0) {
+          newZ <- newX[names(beta), samInd, drop = F]
+          lp <- t(newZ) %*% beta
+        } else {
+          lp <- rep(1, ncol(newZ))
+        }
+      }
+      
+      # other
+      if(method %in% c("ssgsea", "zscore", "gsva")){
+        
+        mod  <- modsPath[[path]]
+        beta <- mod[[method]]
+        
+        if (length(beta) > 0) {
+          newZ <- tranX.new[[paste0("X_", path, "_", method)]]
+          lp   <- t(newZ[ ,samInd, drop = FALSE]) %*% beta
+        } else {
+          lp  <- rep(1, ncol(newZ))
+        }
+      }
+      
+      # get C-index
+      cindex <- intsurv::cIndex(newy[samInd, "time"], 
+                                newy[samInd, "status"], lp)["index"]
+      
+      # for gene, 
+      if (method %in% c("ssgsea", "zscore", "gsva")) {
+        Z.t <- tranX.t[[paste0("X.t_", path, "_", method)]]
+      } else {
+        Z.t <- X.t
+      }
+      
+      ibs <- get.ibs(Z.t, newZ, y.t, newy[samInd,], beta)
+      
+      out[[paste0(path, "_", method)]] <- 
+        setNames(c(cindex, ibs), c("c-index", "ibs"))
+    }
+    
+    return(out)
+  }
+  
+  # get Cindex and IBS for whole data
+  allPred <- doParFun(seq_len(ncol(newX)))
+
+  require(doParallel)
+  require(doSNOW)
+  nCores  <- pmin(detectCores() - 1, nCores)
+  cluster <- makeCluster(nCores)
+  registerDoParallel(cluster)  
+  
+  nRun <- length(samIDList)
+  pb <- txtProgressBar(min = 1, max = nRun, style = 3)
+  progress <- function(n) setTxtProgressBar(pb, n)
+  opts <- list(progress = progress)
+  
+  re <- foreach(i = seq_len(length(samIndList)),
+                .packages = "survival",
+                .export = c("tranX.t", "tranX.new", "get.ibs"),
+                .options.snow = opts) %dopar% {
+                  
+                  samInd <- samIndList[[i]]
+                  return(doParFun(samInd))
+                }
+  
+  stopCluster(cluster)
+  
+  # extract group
+  extract_group <- function(input_list, group_name) {
+    do.call(rbind, lapply(input_list, `[[`, group_name))
+  }
+  
+  outList <- list()
+  for(i in seq_along(path_method)) {
+    path <- path_method[[i]][1]
+    method <- path_method[[i]][2]
+    outList[[paste0(path, "_", method)]] <- extract_group(re, paste0(path, "_", method))
+  }
+  
+  CI <- lapply(outList, function(x) 
+    apply(x, 2, function(xx) quantile(xx, c(0.025, 0.975))))
+  
+  out <- list()
+  for(k in names(allPred)) {
+    
+    mean <- round(allPred[[k]], 3)
+    ci   <- round(CI[[k]], 3)
+    ci   <- apply(ci, 2, function(x) paste0("(", x[1], ",", x[2], ")"))
+    out[[k]] <- paste0(mean, ci)
+  }
+  
+  return(list(forTab = as.data.frame(out),
+              forPlot = list(CI = CI, maen = allPred),
+              forTest = outList))
+}
+
+
+
+# in GSE136324
+
+path_method <- list(c("vax", "grp"),
+                    c("vax", "ssgsea"),
+                    c("", "genes"))
+nRun <- 1000
+
+load("../output/training.RData")
+load("../output/hs.RData")
+load("../data/GSE136324.RData")
+X136324 <- as.matrix(X)
+y136324 <- survival::Surv(clin$time, clin$status)
+
+n <- ncol(X136324)
+set.seed(123)
+samIndList <- sapply(seq_len(nRun), function(x) sample(seq_len(n), n, replace = TRUE),
+                     simplify = FALSE)
+
+Bootpred136324 <- BootMyModsFun(modsPath, modsGenes, 
+                                newX = X136324, newy = y136324,
+                                path_method = path_method, 
+                                samIndList = samIndList,
+                                nCores = 4, 
+                                X.t = X136324, y.t = y136324)
+
+# GSE9782
 load("../data/GSE9782B.RData")
 X9782 = as.matrix(X)
 y9782 = survival::Surv(clin$time, clin$status)
-lp9782_vax_grp <- predict.mods(modsPath, X9782, paths = "vax", method = "grp")
-lp9782_vax_ssgsea <- predict.mods(modsPath, X9782, paths = "vax", method = "ssgsea")
-lp9782_genes <- predict.mods(modsGenes, X9782, paths = "", method = "genes")
+n <- ncol(X9782)
+set.seed(123)
+samIndList <- sapply(seq_len(nRun), function(x) sample(seq_len(n), n, replace = TRUE),
+                     simplify = FALSE)
 
-pred9782 <- list(lp9782_vax_grp = lp9782_vax_grp, 
-                 # lp9782_cgn_grp = lp9782_cgn_grp,
-                 lp9782_vax_ssgsea = lp9782_vax_ssgsea,
-                 lp9782_genes = lp9782_genes)
+Bootpred9782 <- BootMyModsFun(modsPath, modsGenes, 
+                            newX = X9782, newy = y9782,
+                            path_method = path_method, 
+                            samIndList = samIndList,
+                            nCores = 10, 
+                            X.t = X136324, y.t = y136324)
 
+
+# GSE2658
 load("../data/GSE2658B.RData")
 X2658 = as.matrix(X)
 y2658 = survival::Surv(clin$time, clin$status)
-lp2658_vax_grp <- predict.mods(modsPath, X2658, paths = "vax", method = "grp")
-lp2658_vax_ssgsea <- predict.mods(modsPath, X2658, paths = "vax", method = "ssgsea")
-lp2658_genes <- predict.mods(modsGenes, X2658, paths = "", method = "genes")
 
-pred2658 <- list(lp2658_vax_grp = lp2658_vax_grp, 
-                 # lp2658_cgn_grp = lp2658_cgn_grp,
-                 lp2658_vax_ssgsea = lp2658_vax_ssgsea,
-                 lp2658_genes = lp2658_genes)
+set.seed(123)
+n <- ncol(X2658)
+samIndList <- sapply(seq_len(nRun), function(x) sample(seq_len(n), n, replace = TRUE),
+                     simplify = FALSE)
 
-# save(list = c("pred136324", "pred9782", "pred2658"), file = "../output/pred.RData")
-#- get C-index and IBS table 
+Bootpred2658 <- BootMyModsFun(modsPath, modsGenes, 
+                            newX = X2658, newy = y2658,
+                            path_method = path_method, 
+                            nCores = 10, 
+                            samIndList = samIndList,
+                            X.t = X136324, y.t = y136324)
 
-m1 <- re9782 %>% filter((paths == "vax" & method == "grp") |
-                          (paths == "vax" & method == "ssgsea") |
-                          method == "genes") %>% 
-  mutate(data = "GSE9782",
-         method = paste0(paths, "(", method, ")")) %>%
-  dplyr::select(method, measure, value) %>%
-  pivot_wider(names_from = measure)
+# generate table
 
-m2 <- re2658 %>% filter((paths == "vax" & method == "grp") |
-                          (paths == "vax" & method == "ssgsea") |
-                          method == "genes") %>% 
-  mutate(data = "GSE2658",
-         method = paste0(paths, "(", method, ")")) %>%
-  dplyr::select(method, measure, value) %>% 
-  pivot_wider(names_from = measure)
+tab3 <- cbind(t(Bootpred136324$forTab), t(Bootpred9782$forTab), t(Bootpred2658$forTab))
+colnames(tab3) <- paste0(
+  rep(c("GSE136324", "GSE9782", "GSE2658"), each = 2), "-",
+  rep(c("C-index", "IBS"), time = 3))
 
-# Table 3
-re <- merge(m1, m2, by = "method", suffixes = c("(GSE9782)", "(GSE2658)"))
-write.csv(re, file = "../results/outvalid.csv")
+write.csv(tab3, file = "../results/Tab3.csv")
+
+# generate plot
+# 
+# meanCiDat <- c()
+# 
+# for(i in c("GSE136324", "GSE9782", "GSE2658")) {
+#   
+#   obj <- get(paste0("Bootpred", str_extract(i, "[0-9]+")))
+#   
+#   ci <- obj$forPlot$CI
+#   mean <- obj$forPlot$maen
+#   
+#   for(j in names(ci)) {
+#     
+#     tmpci <- t(ci[[j]]) %>%
+#       as.data.frame() %>%
+#       tibble::rownames_to_column("metric")
+#     
+#     tmpmean <- mean[[j]] %>%
+#       data.frame(mean = .) %>%
+#       tibble::rownames_to_column("metric") %>%
+#       left_join(y = tmpci, by = "metric") %>%
+#       mutate(model = j, data = i)
+#     
+#     meanCiDat <- rbind(meanCiDat, tmpmean)
+#   }
+# }
+# 
+# meanCiDat <- meanCiDat %>%
+#   mutate(model = case_when(model == "vax_grp" ~ "Vax(grp)",
+#                            model == "vax_ssgsea" ~ "Vax(ssgsea)",
+#                            model == "_genes" ~ "Genes"))
+#          
+# 
+# # plot function                  
+# plotInternal <- function(metric, data) {
+#   
+#   dat <- meanCiDat[meanCiDat$metric == metric & meanCiDat$data == data,]
+#   pd <- position_dodge(width = 0.5)
+#   p1 <- ggplot(dat, aes(x = model, y = mean, fill = "black")) + 
+#     geom_line(position = pd) +
+#     geom_pointrange(aes(ymin =`2.5%`, ymax = `97.5%`), 
+#                     position = pd,
+#                     size = 0.35) +
+#     theme_bw() + 
+#     ylab("C-index") +
+#     xlab(NULL) + 
+#     ggtitle("A, C-index") + 
+#     theme(legend.title = element_blank(),
+#           legend.position = "none")
+#   p1
+# }
+# 
+# p1 <- plotInternal(metric = "c-index", data = "GSE9782")
 
 #-------------------------------------------------------------------------------
-#- compare with previous models
+#- statistical test based on bootstrep resampling
 #-------------------------------------------------------------------------------
-source("previous.models.R")
-#- compare with previous models
-#- adjust batch effects
 
-adjDat <- function(method) {
+test.fun <- function(obj) {
   
-  #- load previous models
-  load("../data/dataPreviousModel.RData")
-  load("../data/batchCorrectedData.RData")
+  obj <- obj$forTest
+  dat <- as.data.frame(obj)
   
-  X9782 <- miss.impute(X9782, cbind(X136324, X2658))
-  
-  if (method == "MILLENNIUM100") {
-    Ref <- batchCorrectedData$gepall
-    Ref <- Ref[,batchCorrectedData$batchesall["APEX",]]
-  } else if(method == "EMC92"){
-    Ref <- batchCorrectedData$gepall
-    Ref <- Ref[,batchCorrectedData$batchesall["H65",]]
-  }  else {
-    Ref <- X136324
+  n <- ncol(dat)
+  pmat <- matrix(NA, n, n, dimnames = list(colnames(dat), colnames(dat)))
+  for(i in seq_len(n-1)){
+    for(j in (i+1):n){
+      pmat[i,j] <- wilcox.test(dat[,i], dat[,j], paired = TRUE)$p.value
+    }
   }
   
-  #- impute for X9782
-  probes.in <- rownames(Ref)
-  dat <- cbind(Ref[probes.in,], X9782[probes.in,], X2658[probes.in,], 
-               X136324[probes.in,])
-  
-  batch <- c(rep(1, ncol(Ref)), rep(2, ncol(X9782)), rep(3, ncol(X2658)), 
-             rep(4, ncol(X136324)))
-  
-  cb <- ComBat(dat = dat,
-               batch = batch,
-               mod = NULL,
-               par.prior = T,
-               prior.plots = FALSE,
-               mean.only = F,
-               ref.batch = 1,
-               BPPARAM = bpparam("SerialParam"))
-  
-  #- X9782
-  X9782 <- cb[,batch == 2]
-  
-  #- X2658
-  X2658 <- cb[,batch == 3]
-  
-  #- X2658
-  X136324 <- cb[,batch == 4]
-  
-  .GlobalEnv$Ref <- Ref
-  .GlobalEnv$X9782 <- X9782
-  .GlobalEnv$X2658 <- X2658
-  .GlobalEnv$X136324 <- X136324
+  return(pmat)
 }
 
-#-
-adjDat(method = "EMC92")
+test.fun(Bootpred136324)
+test.fun(Bootpred9782)
+test.fun(Bootpred2658)
 
-#- m92
-m92.2658 <- EMC92Classifier(trainlogdata = Ref, testlogdata = X2658)[,"score"]
-m92.9782 <- EMC92Classifier(trainlogdata = Ref, testlogdata = X9782)[,"score"]
-m92.136324 <- EMC92Classifier(trainlogdata = Ref, testlogdata = X136324)[,"score"]
+#-Statistical test using likelihood ratio --------------------------------------
 
-#- m70
-adjDat(method = "UAMS70")
-m70.2658 <- UAMS70Classifier(testlogdata = X2658)[,"score"]
-m70.9782 <- UAMS70Classifier(testlogdata = X9782)[,"score"]
-m70.136324 <- UAMS70Classifier(testlogdata = X136324)[,"score"]
+# FitCoxMod <- function(path, method, newX, newy) {
+#   
+#   # to matrix     
+#   newX = as.matrix(newX)
+#   # transDat 
+#   if (method %in% c("ssgsea", "zscore", "gsva")){
+#     
+#     mod  <- modsPath[[path]]
+#     beta <- mod[[method]]
+#     
+#     newX <- GSVA::gsva(newX, hs[[path]][names(beta)], method = method, 
+#                        ssgsea.norm = FALSE)
+#     
+#     if (length(beta) > 0) {
+#       lp   <- t(newX[ , , drop = FALSE]) %*% beta
+#     } else {
+#       lp  <- rep(1, ncol(newX))
+#     }
+#   }
+#   
+#   # gene model
+#   if (method == "genes"){
+#     beta <- modsGenes
+#     if (length(beta) > 0) {
+#       newX <- newX[names(beta), , drop = F]
+#       lp <- t(newX) %*% beta
+#     } else {
+#       lp <- rep(1, ncol(newX))
+#     }
+#   }
+#   
+#   # grp
+#   if (method == "grp") {
+#     mod  <- modsPath[[path]]
+#     beta <- mod$grp$beta
+#     if (length(beta) > 0) {
+#       newX <- newX[names(beta), , drop = F]
+#       lp <- t(newX) %*% beta
+#     } else {
+#       lp <- rep(1, ncol(newX))
+#     }
+#   }
+#   
+#   # fit model
+#   require(survival)
+#   mod <- survival::coxph(newy ~ lp, init = 1, iter.max = 0, x = T)
+#   return(mod)
+# }
+# 
+# load("../output/training.RData")
+# load("../data/GSE9782B.RData")
+# X9782 = as.matrix(X)
+# y9782 = survival::Surv(clin$time, clin$status)
+# 
+# mod1 <- FitCoxMod(path = "vax", method = "grp", newX = X9782, newy = y9782)
+# mod2 <- FitCoxMod(path = "vax", method = "ssgsea", newX = X9782, newy = y9782)
+# mod3 <- FitCoxMod(path = "", method = "genes", newX = X9782, newy = y9782)
+# 
+# nonnestcox::plrtest(mod1, mod2, nested = FALSE, adjusted = "none")
+# nonnestcox::plrtest(mod1, mod3, nested = FALSE, adjusted = "none")
+# nonnestcox::plrtest(mod2, mod3, nested = FALSE, adjusted = "none")
+# 
+# p1 <- anova(mod1, mod2)$`Pr(>|Chi|)`[2]
+# p2 <- anova(mod1, mod3)$`Pr(>|Chi|)`[2]
+# p3 <- anova(mod2, mod3)$`Pr(>|Chi|)`[2]
+# 
+# p.adjust(c(p1, p2, p3), "bonferroni")
+# #
+# 
+# load("../data/GSE2658B.RData")
+# X2658 = as.matrix(X)
+# y2658 = survival::Surv(clin$time, clin$status)
+# 
+# mod1 <- FitCoxMod(path = "vax", method = "grp", newX = X2658, newy = y2658)
+# mod2 <- FitCoxMod(path = "vax", method = "ssgsea", newX = X2658, newy = y2658)
+# mod3 <- FitCoxMod(path = "", method = "genes", newX = X2658, newy = y2658)
+# 
+# nonnestcox::plrtest(mod1, mod2, nested = FALSE, adjusted = "none")
+# nonnestcox::plrtest(mod1, mod3, nested = FALSE, adjusted = "none")
+# nonnestcox::plrtest(mod2, mod3, nested = FALSE, adjusted = "none")
+# 
+# 
+# p1 <- anova(mod1, mod2)$`Pr(>|Chi|)`[2]
+# p2 <- anova(mod1, mod3)$`Pr(>|Chi|)`[2]
+# p3 <- anova(mod2, mod3)$`Pr(>|Chi|)`[2]
+# p.adjust(c(p1, p2, p3), "bonferroni")
 
-#- m15
-adjDat(method = "FM15")
-m15.2658 <- IFM15Classifier(testlogdata = X2658, trainlogdata = Ref)[,"score"]
-m15.9782 <- IFM15Classifier(testlogdata = X9782, trainlogdata = Ref)[,"score"]
-m15.136324 <- IFM15Classifier(testlogdata = X136324, trainlogdata = Ref)[,"score"]
+# summarize results
+#-------------------------------------------------------------------------------
+#- compare with previous models
+#-------------------------------------------------------------------------------
+# data prepare
+# parallel function
+# get the confidence interval using bootstrap resampling
 
-#- m100
-adjDat(method = "MILLENNIUM100")
-m100.2658 <- MILLENNIUM100Classifier(trainlogdata = Ref, testlogdata = X2658)[,"score"]
-m100.9782 <- MILLENNIUM100Classifier(trainlogdata = Ref, testlogdata = X9782)[,"score"]
-m100.136324 <- MILLENNIUM100Classifier(trainlogdata = Ref, testlogdata = X136324)[,"score"]
+parFun <- function(dat, method, samInds) {
+  
+  gFun <- function(dat, datName, method, samInds) {
+    # datName, e.g., "GSE9782"
+    datID <- gsub("GSE", "", datName)
+    n <- ncol(dat[[paste0("X", datID)]])
+    
+    samInd <- samInds[[datName]]
+    parList <- list(trainlogdata = dat$Ref,
+                    testlogdata  = dat[[paste0("X", datID)]][,samInd])
+    
+    lp <- do.call(method, parList)[ ,"score"]
+    # get cindex
+    cindex <-  intsurv::cIndex(dat[[paste0("y", datID)]][samInd, "time"],
+                               dat[[paste0("y", datID)]][samInd, "status"],
+                               lp)["index"]
+    return(cindex)
+  }
+  
+  # reList <- list()
+  # for(method in methods) {
+  #   reList[[method]] <- gFun(dat, datName, method, samInd)
+  # }
+  
+  out <- c("GSE136324" = gFun(dat, datName = "GSE136324", method = method, samInds = samInds),
+           "GSE9782" =   gFun(dat, datName = "GSE9782", method = method, samInds = samInds),
+           "GSE2658" =   gFun(dat, datName = "GSE2658", method = method, samInds = samInds))
+  return(out)
+}
 
-#- grp1
-#- import our models
-load("../output/pred.RData")
 
-#- C-index
-#- GSE136324
-load("../data/GSE136324.RData")
-c92 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m92.136324)["index"]
-c70 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m70.136324)["index"]
-c15 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m15.136324)["index"]
-c100 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m100.136324)["index"]
-#- 1, grp.vax; 2, genes; 3, ssgsea.vax
-vaxgrp    <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred136324$lp136324_vax_grp)["index"]
-vaxssgsea <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred136324$lp136324_vax_ssgsea)["index"]
-genes     <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred136324$lp136324_genes)["index"]
+nCores = 6
+nRun = 1000
+methods <- c("EMC92Classifier", "UAMS70Classifier", "IFM15Classifier", "MILLENNIUM100Classifier")
 
-c136324 <- c("IFM15" = c15, "UAMS-70" = c70, "EMC-92" = c92, "MILLENNIUM-100" = c100,
-             "vax(grp)" = vaxgrp, "vax(ssgsea)" = vaxssgsea, "genes" = genes)
+CIList <- list()
+getSamIndList <- function(datName, nRun) {
+  
+  # ensure use same samInd with bootstrap for comparing proposed model and gene model
+  set.seed(123)
+  load(paste0("../data/", datName, ".RData"))
+  n <- ncol(X)
+  sapply(seq_len(nRun), function(x) sample(seq_len(n), n, replace = TRUE),
+         simplify = FALSE)
+}
 
-#- GSE2658
-load("../data/GSE2658.RData")
-c92 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m92.2658)["index"]
-c70 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m70.2658)["index"]
-c15 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m15.2658)["index"]
-c100 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m100.2658)["index"]
-#- 1, grp.vax; 2, genes; 3, ssgsea.vax
-vaxgrp    <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred2658$lp2658_vax_grp)["index"]
-vaxssgsea <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred2658$lp2658_vax_ssgsea)["index"]
-genes   <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred2658$lp2658_genes)["index"]
-c2658   <- c("IFM15" = c15, "UAMS-70" = c70, "EMC-92" = c92, "MILLENNIUM-100" = c100,
-             "vax(grp)" = vaxgrp, "vax(ssgsea)" = vaxssgsea, "genes" = genes)
+# get sam list
+samIndList <- sapply(c("GSE136324", "GSE9782", "GSE2658"),
+                     getSamIndList, 
+                     nRun = 1000,
+                     simplify = FALSE)
 
-#- GSE9782
-load("../data/GSE9782.RData")
-c92 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m92.9782)["index"]
-c70 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m70.9782)["index"]
-c15 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m15.9782)["index"]
-c100 <- intsurv::cIndex(clin[,"time"], clin[,"status"], m100.9782)["index"]
-#- 1, grp.vax; 2, genes; 3, ssgsea.vax
-vaxgrp  <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred9782$lp9782_vax_grp)["index"]
-vaxssgsea <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred9782$lp9782_vax_ssgsea)["index"]
-genes <- intsurv::cIndex(clin[,"time"], clin[,"status"], pred9782$lp9782_genes)["index"]
-c9782 <- c("IFM15" = c15, "UAMS-70" = c70, "EMC-92" = c92, "MILLENNIUM-100" = c100,
-           "vax(grp)" = vaxgrp, "vax(ssgsea)" = vaxssgsea, "genes" = genes)
+for(method in methods) {
+  
+  require(doParallel)
+  require(doSNOW)
+  nCores  <- pmin(detectCores() - 1, nCores)
+  cluster <- makeCluster(nCores)
+  registerDoParallel(cluster)  
+  
+  # adjDat, function in fun.R, used for batch correction by methods
+  dat <- adjDat(method)
+  pb <- txtProgressBar(min = 1, max = nRun, style = 3)
+  progress <- function(n) setTxtProgressBar(pb, n)
+  opts <- list(progress = progress)
+  
+  re <- foreach(i = seq_len(nRun),
+                .export = c("dat", "samIndList"),
+                .combine = "rbind",
+                .options.snow = opts) %dopar% {
+                  
+                  source("previous.models.R")
+                  
+                  samInds <- list()
+                  for(datNam in c("GSE136324", "GSE9782", "GSE2658")) {
+                    samInds[[datNam]] <- samIndList[[datNam]][[i]]
+                  }
+                  
+                  out <- parFun(dat, method = method, samInds) 
+                  return(out)
+                }
+  
+  CIList[[method]] <- re
+  stopCluster(cluster)
+}
 
-cmodels <- round(cbind(c136324 = c136324, c2658 = c2658, c9782 = c9782), 3)
-# Table 4
-write.csv(cmodels, file = "../results/comparemodels.csv")
+re <- lapply(CIList, function(x) {
+  
+  tidyr::pivot_longer(as.data.frame(x), 
+               everything(), 
+               names_to = "data") %>% 
+    dplyr::group_by(data) %>%
+    dplyr::summarise(lower = round(quantile(value, 0.025), 3),
+              upper = round(quantile(value, 0.975), 3)) %>%
+    mutate(ci = paste0("(", lower, ",", upper, ")"),
+           data = gsub(".index", "", data)) %>%
+    dplyr::select(data, ci)
+})
+
+
+# summarize ci
+ci <- re %>%
+  purrr::imap_dfr( ~ .x %>% 
+                     mutate(Classifier = .y)) %>%
+  tidyr::pivot_wider(names_from = Classifier, values_from = ci)
+
+# summarize mean
+meanC <- c()
+source("previous.models.R")
+
+# sample ID for all samples
+samInds <- list() 
+
+for(i in c("GSE136324", "GSE9782", "GSE2658")){
+  # ensure use same samInd with bootstrap for comparing proposed model and gene model
+  set.seed(123)
+  load(paste0("../data/", i, ".RData"))
+  n <- ncol(X)
+  samInds[[i]] <- seq_len(n)
+}
+
+for(method in methods){
+  dat <- adjDat(method)
+  meanC <- cbind(meanC, parFun(dat, method = method, samInds = samInds))
+}
+
+colnames(meanC) <- methods
+# rownames remove index
+rownames(meanC) <- gsub(".index", "", rownames(meanC))
+# 3 digits
+meanC <- round(meanC, 3)
+
+# merge and summarize results
+otherC <- meanC %>% 
+  as.data.frame() %>%
+  tibble::rownames_to_column("data") %>%
+  left_join(ci, by = "data") %>%
+  mutate(EMC92Classifier = paste0(EMC92Classifier.x, EMC92Classifier.y),
+         UAMS70Classifier = paste0(UAMS70Classifier.x, UAMS70Classifier.y),
+         IFM15Classifier = paste0(IFM15Classifier.x, IFM15Classifier.y),
+         MILLENNIUM100Classifier = paste0(MILLENNIUM100Classifier.x, 
+                                          MILLENNIUM100Classifier.y)) %>%
+  dplyr::select(data, IFM15Classifier, UAMS70Classifier, EMC92Classifier, MILLENNIUM100Classifier) %>%
+  t()
+
+write.csv(otherC, "../results/comparemodels.csv")
+
+# statistical test
+
+pvalues <- c()
+
+for(i in c("GSE136324", "GSE9782", "GSE2658")) {
+
+  myMod <- get(paste0("Bootpred", gsub("GSE", "", i)))$forTest$vax_grp[,1]
+  ind <- grep(i, colnames(CIList[[1]]))
+  otherMods <- lapply(CIList, function(x) x[,ind])
+  
+  pvalue <- c()
+  for(j in seq_along(otherMods)) {
+    pvalue <- c(pvalue,  wilcox.test(myMod, otherMods[[j]], paired = TRUE)$p.value)
+  }
+  names(pvalue) <- names(otherMods)
+  pvalues[[i]] <- pvalue
+}
 
 #-------------------------------------------------------------------------------
 #- Missing data imputation
 #-------------------------------------------------------------------------------
+
 #- add missing values ----------------------------------------------------------
 #- C-index
 
